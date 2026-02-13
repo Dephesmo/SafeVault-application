@@ -1,0 +1,44 @@
+<!-- webform.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Register / Login</title>
+</head>
+<body>
+  <!-- Server must render a real CSRF token into the value attribute -->
+  <h2>Register</h2>
+  <form id="registerForm" action="/register" method="post" novalidate>
+    <input type="hidden" name="__RequestVerificationToken" value="{{CSRF_TOKEN_HERE}}">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" required maxlength="100" pattern="^[A-Za-z0-9_\-\. ]{1,100}$" autocomplete="username">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" required maxlength="255" autocomplete="email">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" required minlength="8" maxlength="128" autocomplete="new-password">
+    <button type="submit">Register</button>
+  </form>
+
+  <h2>Login</h2>
+  <form id="loginForm" action="/login" method="post" novalidate>
+    <input type="hidden" name="__RequestVerificationToken" value="{{CSRF_TOKEN_HERE}}">
+    <label for="loginEmail">Email</label>
+    <input id="loginEmail" name="email" type="email" required maxlength="255" autocomplete="email">
+    <label for="loginPassword">Password</label>
+    <input id="loginPassword" name="password" type="password" required maxlength="128" autocomplete="current-password">
+    <button type="submit">Login</button>
+  </form>
+
+  <script>
+    // Client-side convenience validation only. Server-side validation is authoritative.
+    document.getElementById('registerForm').addEventListener('submit', function (e) {
+      const pwd = document.getElementById('password').value;
+      if (pwd.length < 8) {
+        e.preventDefault();
+        alert('Password must be at least 8 characters.');
+      }
+    });
+  </script>
+</body>
+</html>
