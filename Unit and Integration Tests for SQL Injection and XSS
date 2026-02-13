@@ -1,0 +1,93 @@
+// Tests/TestInputValidation.cs
+// Requires packages: NUnit, Microsoft.AspNetCore.Mvc.Testing, Microsoft.NET.Test.Sdk, MySqlConnector
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using Microsoft.AspNetCore.Mvc.Testing;
+using System.Collections.Generic;
+using System.Linq;
+
+[TestFixture]
+public class TestInputValidation
+{
+    private WebApplicationFactory<Program> _factory;
+    private HttpClient _client;
+
+    [SetUp]
+    public void Setup()
+    {
+        _factory = new WebApplicationFactory<Program>();
+        _client = _factory.CreateClient();
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _client.Dispose();
+        _factory.Dispose();
+    }
+
+    private async Task<string> GetCsrfTokenAsync()
+    {
+        var resp = await _client.GetAsync("/form");
+        resp.EnsureSuccessStatusCode();
+        var html = await resp.Content.ReadAsStringAsync();
+        // Extract hidden input value for __RequestVerificationToken
+        var m = Regex.Match(html, @"name=""__RequestVerificationToken""\s+value=""([^""]+)""");
+        return m.Success ? WebUtility.HtmlDecode(m.Groups[1].Value) : string.Empty;
+    }
+
+    [Test]
+    public async Task TestForSQLInjection()
+    {
+        var token = await GetCsrfTokenAsync();
+        Assert.IsNotEmpty(token, "CSRF token should be present.");
+
+        var maliciousUsername = "attacker'; DROP TABLE Users; --";
+        var form = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"username", maliciousUsername},
+            {"email", "sqltest@example.com"},
+            {"bio", "normal bio"}
+        };
+
+        var resp = await _client.PostAsync("/submit", new FormUrlEncodedContent(form));
+        Assert.IsTrue(resp.StatusCode == HttpStatusCode.Created || resp.StatusCode == HttpStatusCode.Conflict,
+            $"Unexpected status code: {resp.StatusCode}");
+
+        // Verify that the application still responds to a safe DB check (profile lookup)
+        var profileResp = await _client.GetAsync("/users/profile?email=sqltest@example.com");
+        Assert.IsTrue(profileResp.StatusCode == HttpStatusCode.OK || profileResp.StatusCode == HttpStatusCode.NotFound,
+            "DB should still be accessible and table should exist.");
+    }
+
+    [Test]
+    public async Task TestForXSS()
+    {
+        var token = await GetCsrfTokenAsync();
+        Assert.IsNotEmpty(token);
+
+        var xssPayload = "<script>window.xss=1</script>";
+        var form = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"username", "xssuser"},
+            {"email", "xsstest@example.com"},
+            {"bio", xssPayload}
+        };
+
+        var resp = await _client.PostAsync("/submit", new FormUrlEncodedContent(form));
+        Assert.IsTrue(resp.StatusCode == HttpStatusCode.Created || resp.StatusCode == HttpStatusCode.Conflict);
+
+        var profileHtml = await _client.GetStringAsync("/users/profile?email=xsstest@example.com");
+        // The raw script should not appear unencoded
+        Assert.IsFalse(profileHtml.Contains(xssPayload), "Raw script should not be present in response.");
+        // Encoded form should be present
+        Assert.IsTrue(profileHtml.Contains("&lt;script&gt;") || profileHtml.Contains("window.xss") == false,
+            "Response should contain encoded script or not expose script execution.");
+    }
+}
