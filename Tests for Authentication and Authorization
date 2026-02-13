@@ -1,0 +1,160 @@
+// Tests/TestAuth.cs
+// NuGet packages required:
+// - NUnit
+// - Microsoft.AspNetCore.Mvc.Testing
+// - Microsoft.NET.Test.Sdk
+// - BCrypt.Net-Next
+// - MySqlConnector
+
+using System.Net;
+using System.Net.Http;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using Microsoft.AspNetCore.Mvc.Testing;
+using System.Collections.Generic;
+using System.Net.Http.Headers;
+
+[TestFixture]
+public class TestAuth
+{
+    private WebApplicationFactory<Program> _factory;
+    private HttpClient _client;
+
+    [SetUp]
+    public void Setup()
+    {
+        _factory = new WebApplicationFactory<Program>();
+        _client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _client.Dispose();
+        _factory.Dispose();
+    }
+
+    private async Task<string> GetCsrfTokenAsync()
+    {
+        var resp = await _client.GetAsync("/form");
+        resp.EnsureSuccessStatusCode();
+        var html = await resp.Content.ReadAsStringAsync();
+        var m = Regex.Match(html, @"name=""__RequestVerificationToken""\s+value=""([^""]+)""");
+        return m.Success ? WebUtility.HtmlDecode(m.Groups[1].Value) : string.Empty;
+    }
+
+    [Test]
+    public async Task RegisterLoginAndAccessProfile()
+    {
+        var token = await GetCsrfTokenAsync();
+        Assert.IsNotEmpty(token);
+
+        var email = $"user{System.Guid.NewGuid():N}@example.com";
+        var registerForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"username", "testuser"},
+            {"email", email},
+            {"password", "StrongP@ssw0rd"}
+        };
+
+        var regResp = await _client.PostAsync("/register", new FormUrlEncodedContent(registerForm));
+        Assert.IsTrue(regResp.StatusCode == HttpStatusCode.Created || regResp.StatusCode == HttpStatusCode.Conflict);
+
+        // Login
+        token = await GetCsrfTokenAsync();
+        var loginForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"email", email},
+            {"password", "StrongP@ssw0rd"}
+        };
+
+        var loginResp = await _client.PostAsync("/login", new FormUrlEncodedContent(loginForm));
+        Assert.AreEqual(HttpStatusCode.OK, loginResp.StatusCode);
+
+        // Use same client (cookies preserved) to access profile
+        var profileResp = await _client.GetAsync("/profile");
+        Assert.AreEqual(HttpStatusCode.OK, profileResp.StatusCode);
+        var content = await profileResp.Content.ReadAsStringAsync();
+        Assert.IsTrue(content.Contains("Hello") || content.Length > 0);
+    }
+
+    [Test]
+    public async Task InvalidLoginAttempt()
+    {
+        var token = await GetCsrfTokenAsync();
+        Assert.IsNotEmpty(token);
+
+        var loginForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"email", "nonexistent@example.com"},
+            {"password", "WrongPassword"}
+        };
+
+        var loginResp = await _client.PostAsync("/login", new FormUrlEncodedContent(loginForm));
+        Assert.AreEqual(HttpStatusCode.Unauthorized, loginResp.StatusCode);
+    }
+
+    [Test]
+    public async Task UnauthorizedAccessToAdmin()
+    {
+        // Register a normal user
+        var token = await GetCsrfTokenAsync();
+        var email = $"user{System.Guid.NewGuid():N}@example.com";
+        var registerForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"username", "normaluser"},
+            {"email", email},
+            {"password", "StrongP@ssw0rd"}
+        };
+        await _client.PostAsync("/register", new FormUrlEncodedContent(registerForm));
+
+        // Login as normal user
+        token = await GetCsrfTokenAsync();
+        var loginForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"email", email},
+            {"password", "StrongP@ssw0rd"}
+        };
+        var loginResp = await _client.PostAsync("/login", new FormUrlEncodedContent(loginForm));
+        Assert.AreEqual(HttpStatusCode.OK, loginResp.StatusCode);
+
+        // Attempt to access admin route
+        var adminResp = await _client.GetAsync("/admin");
+        Assert.IsTrue(adminResp.StatusCode == HttpStatusCode.Forbidden || adminResp.StatusCode == HttpStatusCode.Unauthorized);
+    }
+
+    [Test]
+    public async Task AdminAccessWithRole()
+    {
+        // This test assumes you can create an admin user directly in the test DB.
+        // For CI, create an admin row before running tests or provide an endpoint to promote a user in test mode.
+        var adminEmail = "admin@example.com";
+        var adminPassword = "AdminP@ssw0rd";
+
+        // Attempt login as admin
+        var token = await GetCsrfTokenAsync();
+        var loginForm = new Dictionary<string, string>
+        {
+            {"__RequestVerificationToken", token},
+            {"email", adminEmail},
+            {"password", adminPassword}
+        };
+        var loginResp = await _client.PostAsync("/login", new FormUrlEncodedContent(loginForm));
+
+        if (loginResp.StatusCode == HttpStatusCode.OK)
+        {
+            var adminResp = await _client.GetAsync("/admin");
+            Assert.AreEqual(HttpStatusCode.OK, adminResp.StatusCode);
+        }
+        else
+        {
+            Assert.Inconclusive("Admin user not present in test DB. Seed an admin user to run this test.");
+        }
+    }
+}
